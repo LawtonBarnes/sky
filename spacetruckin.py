@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""SKY -- loops the last 24 hours of GOES-19 GEOCOLOR satellite imagery
-full-screen on a CRT. Raspberry Pi 3B + composite video, same appliance
-setup as the sibling apps under /opt (bars, loudness, channel38...): the
-framebuffer-write, console-mode, splash, ABOUT and power-dialog code
+"""SPACE TRUCKIN (named SKY until 1.1) -- loops the last 24 hours of
+GOES-19 GEOCOLOR satellite imagery full-screen on a CRT. Raspberry Pi
+3B + composite video, same appliance setup as the sibling apps under
+/opt (bars, loudness, channel38...): the framebuffer-write, console-mode, splash, ABOUT and power-dialog code
 below is copied from loudness.py rather than shared, per this fleet's
 no-shared-library convention -- each app is its own self-contained
 directory.
@@ -17,6 +17,10 @@ cropping + scaling a frame measured ~55ms on a Pi 3B -- doing that on
 the fly would eat the whole frame budget, and doing it on a thread in
 the player would stall playback under the GIL, hence the separate
 process.
+
+The player stamps each frame's capture time (Central) in the lower
+right, over the Gulf: WHITE while the fetcher is still building the
+loop, YELLOW once it holds the complete 24 hours -- see COMPLETE_MARKER.
 """
 import argparse
 import configparser
@@ -33,6 +37,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import zoneinfo
 from pathlib import Path
 
 import evdev
@@ -43,23 +48,35 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame  # noqa: E402  (must come after SDL env vars are set)
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 BASE_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = BASE_DIR / "settings.ini"
 CACHE_DIR = BASE_DIR / "cache"
 FONT_PATH = BASE_DIR / "VCR_OSD_MONO_1.001.ttf"
-SPLASH_PATH = BASE_DIR / "splash.png"  # optional -- see show_splash()
+SPLASH_PATH = BASE_DIR / "splash.png"  # see build_splash_canvases()
 SPLASH_SECONDS = 5.0
 LOGO_PATH = BASE_DIR / "metalshop-logo.png"  # ABOUT screen -- see draw_about_screen()
 SPLASH_Y_OFFSET = 40  # pixels to shift the splash image up from dead-center
 SPLASH_VERSION_FONT_SIZE = 22
 SPLASH_VERSION_GAP = 20
+SPLASH_WAITING_FONT_SIZE = 26
+SPLASH_WAITING_GAP = 14
 
 FRAME_W, FRAME_H = 720, 480
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 ORANGE = (0xFF, 0xA5, 0x00)
+YELLOW = (0xFF, 0xFF, 0x00)
+
+# Capture-time stamp, lower right over the Gulf of Mexico. Margins keep
+# it inside the CRT's visible area (same 48px as ABOUT_MARGIN_Y).
+STAMP_FONT_SIZE = 28
+STAMP_MARGIN_X = 44
+STAMP_MARGIN_Y = 48
+STAMP_SHADOW = 2  # px black drop shadow, so it stays readable over white cloud tops
+STAMP_FORMAT = "%I:%M %p %m-%d-%y"  # 08:56 AM 10-15-26
+STAMP_TZ = zoneinfo.ZoneInfo("America/Chicago")
 
 # NOAA STAR's CDN keeps ~10 days of every sector at several sizes, one
 # frame every 5 minutes, named <YYYYDDDHHMM UTC>_GOES19-ABI-sp-GEOCOLOR-
@@ -73,7 +90,7 @@ FPS_STEPS = (5, 10, 15, 20, 30)  # Left/Right steps through these
 FETCH_INTERVAL = 300  # seconds between directory polls -- NOAA adds a frame every 5 minutes
 FETCH_RETRY = 60  # seconds before retrying after a failed poll
 HTTP_TIMEOUT = 30
-USER_AGENT = f"SKY/{VERSION} (Raspberry Pi CRT satellite loop)"
+USER_AGENT = f"SPACETRUCKIN/{VERSION} (Raspberry Pi CRT satellite loop)"
 RESCAN_SECONDS = 30  # how often the player looks for new cached frames while waiting
 
 POWER_OPTIONS = ["NO", "YES", "RESTART"]
@@ -91,7 +108,7 @@ FBIO_WAITFORVSYNC = 0x40044620  # _IOW('F', 0x20, __u32)
 
 def load_settings():
     parser = configparser.ConfigParser()
-    parser["sky"] = {
+    parser["spacetruckin"] = {
         "source_url": DEFAULT_SOURCE_URL,
         "image_size": DEFAULT_IMAGE_SIZE,
         "hours": "24",
@@ -100,7 +117,7 @@ def load_settings():
         "crop": "center",
     }
     parser.read(SETTINGS_PATH)
-    section = parser["sky"]
+    section = parser["spacetruckin"]
     crop = section.get("crop")
     if crop not in CROPS:
         print(f"Unknown crop '{crop}' in settings.ini -- falling back to 'center'.", file=sys.stderr)
@@ -231,17 +248,17 @@ class FrameBuffer:
         os.close(self.fd)
 
 
-def show_splash(fb):
-    """Blocking splash shown once at launch -- copied from loudness.py.
-    Shown at the source image's own native resolution, centered on
-    black, with the version number underneath."""
-    if not SPLASH_PATH.exists():
-        return
+def build_splash_canvases():
+    """Splash at the source image's own native resolution, centered on
+    black, version number underneath -- copied from loudness.py. Returns
+    (plain, waiting): `waiting` adds WAITING FOR SATELLITE under the
+    version, and stays up until the fetcher has a first frame to show.
+    (None, None) if the splash image won't load."""
     try:
         img = pygame.image.load(str(SPLASH_PATH)).convert()
     except (pygame.error, OSError) as exc:
         print(f"Splash load failed: {exc}", file=sys.stderr)
-        return
+        return None, None
     canvas = pygame.Surface((FRAME_W, FRAME_H))
     canvas.fill(BLACK)
     img_w, img_h = img.get_size()
@@ -250,10 +267,14 @@ def show_splash(fb):
     canvas.blit(img, (img_x, img_y))
     version_font = pygame.font.Font(str(FONT_PATH), SPLASH_VERSION_FONT_SIZE)
     version_surf = version_font.render(f"VERSION {VERSION}", True, ORANGE)
-    canvas.blit(version_surf, ((FRAME_W - version_surf.get_width()) // 2,
-                                img_y + img_h + SPLASH_VERSION_GAP))
-    fb.write_surface(canvas)
-    time.sleep(SPLASH_SECONDS)
+    version_y = img_y + img_h + SPLASH_VERSION_GAP
+    canvas.blit(version_surf, ((FRAME_W - version_surf.get_width()) // 2, version_y))
+    waiting = canvas.copy()
+    waiting_font = pygame.font.Font(str(FONT_PATH), SPLASH_WAITING_FONT_SIZE)
+    waiting_surf = waiting_font.render("WAITING FOR SATELLITE", True, WHITE)
+    waiting.blit(waiting_surf, ((FRAME_W - waiting_surf.get_width()) // 2,
+                                version_y + version_surf.get_height() + SPLASH_WAITING_GAP))
+    return canvas, waiting
 
 
 # ABOUT screen -- same layout as every other app in the fleet (copied from
@@ -323,6 +344,16 @@ def find_keyboard_devices():
 # framebuffer of a different size or depth never plays mismatched data).
 # The fetcher writes each to a .tmp first and renames it into place, so
 # the player never sees a half-written frame.
+#
+# COMPLETE_MARKER in the same directory means the fetcher's last poll found
+# every frame in NOAA's 24-hour window already cached. The player deletes
+# it before starting the fetcher (so a stale cache from before a poweroff
+# never counts as complete), the fetcher writes it after a poll that leaves
+# nothing missing, and deletes it again whenever a poll finds a real
+# backlog. The routine one new frame every 5 minutes isn't a backlog, so
+# the stamp doesn't blink white on every arrival.
+COMPLETE_MARKER = "complete"
+BACKLOG_FRAMES = 3  # more missing than this in one poll = still building
 
 FRAME_NAME_RE = re.compile(r'href="((\d{11})_[^"]*-(\d+x\d+)\.jpg)"')
 
@@ -357,7 +388,19 @@ def window_stamps(stamps, hours):
 def http_get(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return resp.read()
+        data = resp.read()
+        expected = resp.headers.get("Content-Length")
+    if expected is not None and len(data) != int(expected):
+        raise OSError(f"short read: {len(data)} of {expected} bytes")
+    return data
+
+
+def jpeg_complete(data):
+    """True if the JPEG ends in its EOI marker. A truncated JPEG decodes
+    without any error -- libjpeg just pads the missing rows with flat
+    color, which is what put a frame with a solid yellow lower half into
+    SKY 1.0's loop."""
+    return data.rstrip(b"\0\r\n ").endswith(b"\xff\xd9")
 
 
 def crop_rect(src_w, src_h, crop):
@@ -388,6 +431,7 @@ def run_fetcher(width, height, bpp):
     for leftover in cache_dir.glob("*.tmp"):
         leftover.unlink(missing_ok=True)
     rgb565 = pygame.Surface((width, height), 0, 16) if bpp == 16 else None
+    marker = cache_dir / COMPLETE_MARKER
 
     while True:
         try:
@@ -404,21 +448,29 @@ def run_fetcher(width, height, bpp):
         missing = [s for s in wanted if s not in have]
         if missing:
             print(f"[fetch] {len(missing)} new frame(s), {len(have)} cached", file=sys.stderr, flush=True)
+        if len(missing) > BACKLOG_FRAMES:
+            marker.unlink(missing_ok=True)
+        failed = 0
         # Oldest first, so during the first backfill the loop grows in
         # time order rather than starting with a jump.
         for stamp in missing:
             name = names[stamp]
             try:
                 data = http_get(settings["source_url"] + name)
+                if not jpeg_complete(data):
+                    raise OSError("truncated JPEG (no EOI marker), retrying next poll")
                 img = pygame.image.load(io.BytesIO(data), name)
             except (OSError, pygame.error) as exc:
                 print(f"[fetch] {name}: {exc}", file=sys.stderr, flush=True)
+                failed += 1
                 continue
             rect = crop_rect(*img.get_size(), settings["crop"])
             frame = pygame.transform.smoothscale(img.subsurface(rect), (width, height))
             tmp = cache_dir / f"{stamp}.tmp"
             tmp.write_bytes(surface_to_raw(frame, bpp, rgb565))
             tmp.rename(cache_dir / f"{stamp}.raw")
+        if wanted and not failed:
+            marker.touch()
         # Prune frames that have aged out of the window. An empty listing
         # prunes nothing -- a stale loop beats a black screen.
         if wanted:
@@ -431,7 +483,7 @@ def run_fetcher(width, height, bpp):
 
 # --- Player ------------------------------------------------------------
 
-class SkyApp:
+class SpaceTruckinApp:
     def __init__(self):
         self.settings = load_settings()
         self._quit_requested = False
@@ -451,13 +503,16 @@ class SkyApp:
         self.current_raw = None
         self.hold_left = 0  # frames left to hold the newest frame before looping
         self.next_rescan = 0.0
+        self.complete = False  # COMPLETE_MARKER seen at the last rescan -- sets the stamp color
+        self.stamp_font = pygame.font.Font(str(FONT_PATH), STAMP_FONT_SIZE)
+        self.stamp_cache = {}  # (stamp, complete) -> (x, y, pixels, mask) -- see draw_stamp()
 
         self.osd_font = pygame.font.Font(str(FONT_PATH), 36)
         self.option_font = pygame.font.Font(str(FONT_PATH), 32)
         self.about_body_font = pygame.font.Font(str(FONT_PATH), 26)
         self.about_logo = load_about_logo()
         self.about_canvas = None  # built once per BACK press -- see toggle_about()
-        self.waiting_canvas = None
+        self.splash_canvas, self.waiting_canvas = build_splash_canvases()
         self.power_dialog_active = False
         self.power_dialog_selection = 0  # index into POWER_OPTIONS, defaults to NO
         self.pending_power_action = None  # None, "shutdown", or "restart"
@@ -485,12 +540,23 @@ class SkyApp:
             print(f"Console graphics mode not available: {exc}", file=sys.stderr)
 
         # Started before the splash so the first backfill is already
-        # under way while it's up.
+        # under way while it's up. The marker goes first: completeness is
+        # only ever vouched for by the fetcher running now.
+        (self.cache_dir / COMPLETE_MARKER).unlink(missing_ok=True)
         self.fetcher = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "--fetch",
              str(self.fb.width), str(self.fb.height), str(self.fb.bpp)])
 
-        show_splash(self.fb)
+        # Splash for SPLASH_SECONDS. With nothing cached yet it carries
+        # WAITING FOR SATELLITE, and render() keeps it up until there's a
+        # frame to play.
+        self.rescan()
+        splash = self.splash_canvas if self.frames else self.waiting_canvas
+        if splash is not None:
+            self.fb.write_surface(splash)
+            time.sleep(SPLASH_SECONDS)
+        if self.waiting_canvas is None:
+            self.waiting_canvas = self.build_waiting_canvas()
 
     def _handle_signal(self, signum, frame):
         self._quit_requested = True
@@ -498,6 +564,9 @@ class SkyApp:
     # Loop bookkeeping
 
     def rescan(self):
+        # Marker checked first: the fetcher only writes it after the frames
+        # it vouches for, so a loop listed after seeing it is the whole day.
+        self.complete = (self.cache_dir / COMPLETE_MARKER).exists()
         self.frames = window_stamps(cached_stamps(self.cache_dir), self.settings["hours"])
         self.next_rescan = time.monotonic() + RESCAN_SECONDS
 
@@ -523,12 +592,46 @@ class SkyApp:
             return None
         return raw if len(raw) == self.frame_bytes else None
 
+    def draw_stamp(self, raw):
+        """The current frame's capture time over its lower right corner,
+        drawn straight into a copy of the raw frame bytes -- WHITE while
+        the loop is still building, YELLOW once it's the complete day.
+        The pixel font is rendered without antialiasing, so this is a
+        plain masked copy with no blending."""
+        stamp = self.frames[self.index]
+        key = (stamp, self.complete)
+        cached = self.stamp_cache.get(key)
+        if cached is None:
+            text = stamp_to_datetime(stamp).astimezone(STAMP_TZ).strftime(STAMP_FORMAT)
+            fg = self.stamp_font.render(text, False, YELLOW if self.complete else WHITE)
+            fw, fh = fg.get_size()
+            w, h = fw + STAMP_SHADOW, fh + STAMP_SHADOW
+            surf = pygame.Surface((w, h))
+            surf.fill(BLACK)  # the shadow is just these black pixels let through by the mask
+            surf.blit(fg, (0, 0))
+            text_mask = pygame.surfarray.array_red(pygame.mask.from_surface(fg).to_surface()).T > 0
+            mask = np.zeros((h, w), dtype=bool)
+            mask[STAMP_SHADOW:, STAMP_SHADOW:] |= text_mask
+            mask[:fh, :fw] |= text_mask
+            dtype = np.uint16 if self.fb.bpp == 16 else np.uint32
+            pixels = np.frombuffer(surface_to_raw(surf, self.fb.bpp), dtype=dtype).reshape(h, w)
+            x = self.fb.width - STAMP_MARGIN_X - w
+            y = self.fb.height - STAMP_MARGIN_Y - h
+            if len(self.stamp_cache) > 2 * len(self.frames) + 16:
+                self.stamp_cache.clear()  # drop stamps for frames that aged out
+            cached = self.stamp_cache[key] = (x, y, pixels.copy(), mask)
+        x, y, pixels, mask = cached
+        frame = np.frombuffer(raw, dtype=pixels.dtype).reshape(self.fb.height, self.fb.width).copy()
+        region = frame[y:y + pixels.shape[0], x:x + pixels.shape[1]]
+        region[mask] = pixels[mask]
+        return frame.tobytes()
+
     def set_fps(self, direction):
         steps = list(FPS_STEPS)
         nearest = min(range(len(steps)), key=lambda i: abs(steps[i] - self.fps))
         self.fps = steps[max(0, min(len(steps) - 1, nearest + direction))]
         print(f"fps: {self.fps}", file=sys.stderr)
-        save_setting("sky", "fps", self.fps)
+        save_setting("spacetruckin", "fps", self.fps)
 
     # Screens
 
@@ -538,15 +641,15 @@ class SkyApp:
             return
         s = self.settings
         if self.frames:
-            newest = stamp_to_datetime(self.frames[-1]).astimezone()
+            newest = stamp_to_datetime(self.frames[-1]).astimezone(STAMP_TZ)
             newest_text = newest.strftime("%d %b %I:%M %p %Z").upper().lstrip("0")
-            span = f"{len(self.frames)} FRAMES"
+            span = f"{len(self.frames)} FRAMES" + ("" if self.complete else ", BUILDING")
         else:
             newest_text = "NONE YET"
             span = "DOWNLOADING"
         canvas = pygame.Surface((FRAME_W, FRAME_H))
         draw_about_screen(canvas, self.osd_font, self.about_body_font, self.about_logo,
-                          f"SKY {VERSION}", [
+                          f"SPACE TRUCKIN {VERSION}", [
                               ("SOURCE", "GOES-19 GEOCOLOR"),
                               ("SECTOR", "SOUTHERN PLAINS"),
                               ("LOOP", f"{s['hours']:g} HOURS"),
@@ -558,6 +661,7 @@ class SkyApp:
         self.about_canvas = canvas
 
     def build_waiting_canvas(self):
+        # Fallback for when splash.png won't load.
         canvas = pygame.Surface((FRAME_W, FRAME_H))
         canvas.fill(BLACK)
         surf = self.about_body_font.render("WAITING FOR SATELLITE", True, ORANGE)
@@ -686,6 +790,7 @@ class SkyApp:
             self.rescan()
             self.index = 0
             return
+        raw = self.draw_stamp(raw)
         self.current_raw = raw
         self.fb.write_raw(raw)
         self.advance()
@@ -756,7 +861,7 @@ def main():
     if args.fetch:
         run_fetcher(*args.fetch)
     else:
-        SkyApp().run()
+        SpaceTruckinApp().run()
 
 
 if __name__ == "__main__":

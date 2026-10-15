@@ -1,13 +1,21 @@
-# SKY
+# SPACE TRUCKIN
 
 Loops the last 24 hours of GOES-19 GEOCOLOR satellite imagery full-screen
 on a CRT -- a Raspberry Pi 3B on composite video, part of the METAL SHOP
 McBrain fleet (launched by STRINGS, assigned from SCRUTE).
 
-No overlays, no text: just the loop. It plays from 24 hours ago up to the
-newest frame NOAA has published, holds there for a second, and starts
-over. GEOCOLOR shows true-color clouds by day and city lights by night, so
+(Named SKY until 1.1.) It plays from 24 hours ago up to the newest frame
+NOAA has published, holds there for a second, and starts over. GEOCOLOR shows true-color clouds by day and city lights by night, so
 every loop sweeps a full day/night cycle.
+
+The only overlay is each frame's capture time, lower right over the Gulf,
+in Central time (`08:56 AM 10-15-26`, VCR OSD Mono 28px). It's **white**
+while the loop is still being built in the background -- the first
+backfill, or catching up after the Pi was off -- and turns **yellow** once
+the loop is the complete 24 hours.
+
+At launch the splash shows for 5 seconds; with nothing downloaded yet it
+reads WAITING FOR SATELLITE and stays up until the first frame arrives.
 
 ## Source
 
@@ -19,13 +27,17 @@ caption bar and logo) and scaled to the 720x480 CRT frame.
 
 ## How it works
 
-- **Fetcher** (`sky.py --fetch`, started by the player as a low-priority
+- **Fetcher** (`spacetruckin.py --fetch`, started by the player as a low-priority
   child process): polls the directory every 5 minutes, downloads new
   frames, and stores each one already cropped, scaled and packed into the
   framebuffer's raw pixel format under `cache/<W>x<H>x<bpp>/`. Frames
   older than the loop window are deleted. The first run backfills the
   whole day, about 5 minutes on a Pi 3B -- the loop grows as it goes.
-- **Player** (`sky.py`): copies cached frames straight to `/dev/fb0`,
+  A download that doesn't end in a complete JPEG (NOAA lists frames while
+  they're still uploading) is skipped and retried on the next poll. A
+  `complete` marker file in the cache directory tells the player the
+  fetcher is caught up (yellow timestamp).
+- **Player** (`spacetruckin.py`): copies cached frames straight to `/dev/fb0`,
   vsynced. Decoding and scaling a JPEG takes ~55ms on a Pi 3B, which is
   why that's all done ahead of time in the fetcher; playback itself uses
   ~6% CPU.
@@ -53,10 +65,10 @@ in hours, fps, hold on the newest frame, and crop (`top` / `center` /
 ## Install
 
 ```sh
-sudo git clone https://github.com/LawtonBarnes/sky /opt/sky
-sudo chown -R metalshop:metalshop /opt/sky
-cp /opt/sky/settings.example.ini /opt/sky/settings.ini
-sudo install -m 755 /opt/sky/sky-launcher /usr/local/bin/sky
+sudo git clone https://github.com/LawtonBarnes/spacetruckin /opt/spacetruckin
+sudo chown -R metalshop:metalshop /opt/spacetruckin
+cp /opt/spacetruckin/settings.example.ini /opt/spacetruckin/settings.ini
+sudo install -m 755 /opt/spacetruckin/spacetruckin-launcher /usr/local/bin/spacetruckin
 ```
 
 Requires `python3-pygame`, `python3-evdev` and `python3-numpy`, the same as
