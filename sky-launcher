@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs sky.py bound to the physical console (tty1) regardless of how this
+# was invoked. See /usr/local/bin/bars for the matching rationale --
+# sky.py's KD_GRAPHICS ioctl on /dev/tty needs a real tty1 controlling
+# terminal, which SSH sessions don't provide.
+if [ "$(tty 2>/dev/null)" = "/dev/tty1" ]; then
+    exec python3 /opt/sky/sky.py "$@"
+else
+    exec sudo openvt -f -c 1 -s -w -- python3 /opt/sky/sky.py "$@"
+fi
