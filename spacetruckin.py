@@ -72,7 +72,7 @@ YELLOW = (0xFF, 0xFF, 0x00)
 # Capture-time stamp, lower right over the Gulf of Mexico. Margins keep
 # it inside the CRT's visible area (same 48px as ABOUT_MARGIN_Y).
 STAMP_FONT_SIZE = 28
-STAMP_MARGIN_X = 44
+STAMP_MARGIN_X = 69  # right edge inside NTSC safe title
 STAMP_MARGIN_Y = 48
 STAMP_SHADOW = 2  # px black drop shadow, so it stays readable over white cloud tops
 STAMP_FORMAT = "%I:%M %p %m-%d-%y"  # 08:56 AM 10-15-26
