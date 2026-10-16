@@ -9,7 +9,7 @@ NOAA has published, holds there for a second, and starts over. GEOCOLOR shows tr
 every loop sweeps a full day/night cycle.
 
 The only overlay is each frame's capture time, lower right over the Gulf,
-in Central time (`08:56 AM 10-15-26`, VCR OSD Mono 28px). It's **white**
+in Central time (`THU 08:56 AM 10-15-26`, VCR OSD Mono 28px). It's **white**
 while the loop is still being built in the background -- the first
 backfill, or catching up after the Pi was off -- and turns **yellow** once
 the loop is the complete 24 hours.

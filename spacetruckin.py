@@ -75,7 +75,7 @@ STAMP_FONT_SIZE = 28
 STAMP_MARGIN_X = 69  # right edge inside NTSC safe title
 STAMP_MARGIN_Y = 48
 STAMP_SHADOW = 2  # px black drop shadow, so it stays readable over white cloud tops
-STAMP_FORMAT = "%I:%M %p %m-%d-%y"  # 08:56 AM 10-15-26
+STAMP_FORMAT = "%a %I:%M %p %m-%d-%y"  # THU 08:56 AM 10-15-26 (upper-cased)
 STAMP_TZ = zoneinfo.ZoneInfo("America/Chicago")
 
 # NOAA STAR's CDN keeps ~10 days of every sector at several sizes, one
@@ -602,7 +602,7 @@ class SpaceTruckinApp:
         key = (stamp, self.complete)
         cached = self.stamp_cache.get(key)
         if cached is None:
-            text = stamp_to_datetime(stamp).astimezone(STAMP_TZ).strftime(STAMP_FORMAT)
+            text = stamp_to_datetime(stamp).astimezone(STAMP_TZ).strftime(STAMP_FORMAT).upper()
             fg = self.stamp_font.render(text, False, YELLOW if self.complete else WHITE)
             fw, fh = fg.get_size()
             w, h = fw + STAMP_SHADOW, fh + STAMP_SHADOW
