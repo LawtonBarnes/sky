@@ -75,7 +75,7 @@ STAMP_FONT_SIZE = 28
 STAMP_MARGIN_X = 69  # right edge inside NTSC safe title
 STAMP_MARGIN_Y = 48
 STAMP_SHADOW = 2  # px black drop shadow, so it stays readable over white cloud tops
-STAMP_FORMAT = "%a %I:%M %p %m-%d-%y"  # THU 08:56 AM 10-15-26 (upper-cased)
+STAMP_FORMAT = "%a %I:%M %p"  # THU 08:56 AM (upper-cased)
 STAMP_TZ = zoneinfo.ZoneInfo("America/Chicago")
 
 # NOAA STAR's CDN keeps ~10 days of every sector at several sizes, one
